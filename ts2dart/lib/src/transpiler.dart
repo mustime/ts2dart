@@ -302,6 +302,39 @@ final class Transpiler {
         fetchExternals: fetchExternals);
   }
 
+  static Future<InteropProject> fromLocalNpm(
+      {required String modulePath,
+      required String targetPath,
+      required String dirName,
+      Iterable<String> files = const [],
+      String? contextCheck,
+      Iterable<String> distFiles = const [],
+      Iterable<String> uses = const {},
+      String? targetMainFile,
+      bool force = false,
+      bool fetchExternals = true}) async {
+    final packageJson = conv.json.decode(File('$modulePath/package.json').readAsStringSync()) as dynamic;
+    final mainFiles = files.toList();
+    final transpiller = Transpiler(
+        package: packageJson['name'] as String,
+        targetPath: targetPath,
+        dirName: dirName,
+        contextCheck: contextCheck,
+        uses: uses,
+        targetMainFile: targetMainFile,
+        distFiles: distFiles.toList());
+    var crawlTsFiles = false;
+    final fileArgs = <String>[];
+    for (final path in mainFiles) {
+      fileArgs.add('$modulePath/$path');
+    }
+
+    return transpiller._createProject(
+        fileArgs: fileArgs,
+        crawlTsFiles: crawlTsFiles,
+        fetchExternals: fetchExternals);
+  }
+
   // ignore: unused_element
   void _parseDeps(Map<String, String> versions, Map map) {
     final deps = map['dependencies'];
