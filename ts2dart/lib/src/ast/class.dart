@@ -2,6 +2,7 @@ import 'package:code_builder/code_builder.dart';
 import 'package:collection/collection.dart';
 import 'package:recase/recase.dart';
 import 'package:ts2dart/src/ast/type_parameter.dart';
+import 'package:ts2dart/src/ast/typedef.dart';
 import 'package:ts2dart/src/ast/types/function.dart';
 import '../metadata/struct.dart';
 import 'library.dart';
@@ -650,14 +651,26 @@ class InteropClass extends InteropNamedDeclaration
 
     if (struct.isOk()) {
       inheritance.addAll(struct.heritage.map((h) {
-        final ret = parseRef(h.map);
+        var ret = parseRef(h.map);
 
-        if (ret.type is InteropClass) {
+        var type = ret.type;
+        if (type is InteropClass) {
           return ret as InteropRef<InteropClass>;
         } else {
+<<<<<<< HEAD
+          assert((type is InteropInterface) || (type is InteropTypedef), 'Not interface/typedef: ${type}');
+          if (type is InteropTypedef) {
+            while (ret.typeArgs.isNotEmpty) {
+              type = ret.typeArgs.firstOrNull!.type;
+              ret = ret.typeArgs.first;
+            }
+          }
+          return ret.copyWith((type as InteropInterface).parse().type as InteropClass);
+=======
           assert(ret.type is InteropInterface, 'Not interface: ${ret.type}');
           return ret.copyWith(
               (ret.type as InteropInterface).parse().type as InteropClass);
+>>>>>>> e646b65c348f9039d82830b55499a1a15aa584da
         }
       }));
 
