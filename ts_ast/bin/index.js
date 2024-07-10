@@ -23,13 +23,13 @@ var __importStar = (this && this.__importStar) || function (mod) {
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const ts_morph_1 = require("ts-morph");
 const ts = __importStar(require("typescript"));
 const fs = require("fs");
+const path = require("path");
 const dev = false;
 const debug = true;
-const isTypeNullable = (type) => (ts.isLiteralTypeNode(type) &&
-    type.literal.kind == ts.SyntaxKind.NullKeyword) ||
-    type.kind == ts.SyntaxKind.UndefinedKeyword;
+let inlineImports = 0;
 const anyType = {
     core: "any",
     isNullable: true,
@@ -59,6 +59,9 @@ function extract(files) {
     let inlineCounter = 0;
     let parentNamedType = [];
     let namedListen;
+    let currentFile;
+    let sourceFile;
+    const uses = [];
     const withNamed = (named, fn) => {
         parentNamedType.push(named);
         fn();
@@ -69,12 +72,35 @@ function extract(files) {
         fn();
         namedListen = undefined;
     };
+    const isRelativeImport = (buf) => {
+        const basePath = path.dirname(currentFile) + "/" + buf.replace(/["']/g, "");
+        let imp = basePath + ".d.ts";
+        console.log("tryAddRelativeImport", imp, fs.existsSync(imp), buf);
+        if (!fs.existsSync(imp)) {
+            imp = basePath + "/index.d.ts";
+            if (!fs.existsSync(imp)) {
+                return false;
+            }
+        }
+        return true;
+    };
     const parseNodes = (source, lib) => {
-        var _a;
-        const { typedefs, structs, funcs, vars, modules } = lib;
-        let namespace = (_a = lib.namespace) !== null && _a !== void 0 ? _a : "";
+        const { typedefs, structs, funcs, vars, modules, enums, imports } = lib.items;
+        const pushImport = (declare) => {
+            if (!declare.local) {
+                const spl = declare.from.split("/");
+                const pkg = spl[0];
+                if (!uses.includes(pkg)) {
+                    uses.push(pkg);
+                }
+            }
+            imports.push(declare);
+        };
+        const pushStruct = (struct) => {
+            structs.push(struct);
+        };
         const parseType = (type) => {
-            var _a;
+            var _a, _b;
             if (!type) {
                 return anyType;
             }
@@ -85,6 +111,9 @@ function extract(files) {
                     union: type.types.map((type) => parseType(type)),
                 };
             }
+            else if (ts.isNamedTupleMember(type)) {
+                ret = (_a = parseType(type.type)) !== null && _a !== void 0 ? _a : anyType;
+            }
             else if (
             //ts.isConstructorTypeNode(type)
             ts.isConditionalTypeNode(type)) {
@@ -92,29 +121,28 @@ function extract(files) {
             }
             else if (ts.isTypeQueryNode(type)) {
                 const name = type.exprName.getText();
-                let found;
-                if (name == "globalThis") {
-                    found = {
-                        core: "globalThis",
-                    };
-                }
-                else if (ts.isQualifiedName(type.exprName)) {
-                    found = {
-                        ref: type.exprName.right.getText(),
-                    };
-                }
-                else {
-                    found = vars.find((v) => v.name == name).type;
-                }
-                if (!found) {
-                    console.error("Couldnt find a variable with name", name, lineNumber, "list: ", vars.map((v) => v.name).join(", "));
-                }
                 ret = {
-                    name,
-                    type: found,
+                    accessor: name,
                     _: lineNumber,
                 };
                 //console.log('TypeQuery', name, ret, lineNumber);
+            }
+            else if (ts.isImportTypeNode(type)) {
+                const path = type.argument.getText().replace(/["']/g, "");
+                const alias = "typingsinline" + inlineImports;
+                const typeName = type.qualifier.getText();
+                const ref = alias + "." + typeName;
+                pushImport({
+                    from: path,
+                    alias,
+                    types: [typeName],
+                    local: true,
+                });
+                ret = {
+                    ref,
+                    targs: parseTypeArguments(type.typeArguments),
+                };
+                inlineImports++;
             }
             else if (ts.isTypeOperatorNode(type)) {
                 ret = {
@@ -172,18 +200,24 @@ function extract(files) {
             else if (ts.isTypeReferenceNode(type)) {
                 const ref = type.typeName.getText();
                 if (ref == "Promise" && 1 < 0) {
-                    const sub = (_a = type.typeArguments) === null || _a === void 0 ? void 0 : _a[0];
+                    const sub = (_b = type.typeArguments) === null || _b === void 0 ? void 0 : _b[0];
                     ret = Object.assign({ isFuture: true }, (sub ? parseType(sub) : anyType));
                 }
                 else {
                     namedListen === null || namedListen === void 0 ? void 0 : namedListen(ref);
-                    ret = {
-                        ref,
-                        targs: parseTypeArguments(type.typeArguments),
-                    };
+                    const tn = type.typeName;
+                    if (ts.isQualifiedName(tn)) {
+                        ret = anyType;
+                    }
+                    else {
+                        ret = {
+                            ref,
+                            targs: parseTypeArguments(type.typeArguments),
+                        };
+                    }
                 }
             }
-            else if (ts.isParenthesizedTypeNode(type)) {
+            else if (ts.isParenthesizedTypeNode(type) || ts.isRestTypeNode(type)) {
                 ret = parseType(type.type);
             }
             else if (ts.isArrayTypeNode(type)) {
@@ -201,8 +235,15 @@ function extract(files) {
                 //     name += used.length;
                 //   }
                 // }
+                const prototype = type.members.find((m) => {
+                    var _a;
+                    return ((_a = m.name) === null || _a === void 0 ? void 0 : _a.getText()) == "prototype";
+                });
+                if (prototype && ts.isPropertySignature(prototype) && prototype.type) {
+                    //return parseType(prototype.type);
+                }
                 if (!name) {
-                    name = `Inline${inlineCounter}`;
+                    name = `IInline${inlineCounter}`;
                     inlineCounter++;
                 }
                 let struct = { isClass: false };
@@ -223,7 +264,7 @@ function extract(files) {
                     }
                 });
                 struct.generics = generics;
-                structs.push(struct);
+                pushStruct(struct);
                 const targs = [];
                 for (const g of generics) {
                     const type = g.default || g.constraint;
@@ -312,7 +353,9 @@ function extract(files) {
                 const doc = parseDoc(member);
                 const prop = addSource(member, {
                     doc,
-                    isMethod: ts.isFunctionLike(member) && !ts.isSetAccessorDeclaration(member),
+                    isMethod: ts.isFunctionLike(member) &&
+                        !ts.isSetAccessorDeclaration(member) &&
+                        !ts.isGetAccessorDeclaration(member),
                 });
                 if (ts.isCallSignatureDeclaration(member)) {
                     calls.push(addSource(member, {
@@ -473,9 +516,11 @@ function extract(files) {
         const parseInterface = (node) => {
             var _a, _b;
             const name = node.name.text;
-            const current = (_a = structs.find((struct) => struct.name == name)) !== null && _a !== void 0 ? _a : (_b = mainModules
-                .find((m) => m.namespace == namespace &&
-                m.structs.find((struct) => struct.name == name))) === null || _b === void 0 ? void 0 : _b.structs.find((struct) => struct.name == name);
+            const current = sourceFile.hasNoDefaultLib
+                ? (_a = structs.find((struct) => struct.name == name)) !== null && _a !== void 0 ? _a : (_b = mainModules
+                    .find((m) => m.namespace == lib.namespace &&
+                    m.items.structs.find((struct) => struct.name == name))) === null || _b === void 0 ? void 0 : _b.items.structs.find((struct) => struct.name == name)
+                : undefined;
             const parsed = Object.assign(Object.assign({}, parseStruct(node, name, node.members, node.typeParameters)), { isClass: false });
             if (current) {
                 for (const item of parsed.indexes) {
@@ -492,12 +537,13 @@ function extract(files) {
                 }
             }
             else {
-                structs.push(parsed);
+                pushStruct(parsed);
             }
         };
         const getLineNumber = (node) => node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line +
             1;
         const parseNode = (node, sourceFile) => {
+            var _a, _b, _c, _d;
             // This is an incomplete set of AST nodes which could have a top level identifier
             // it's left to you to expand this list, which you can do by using
             // https://ts-ast-viewer.com/ to see the AST of a file then use the same patterns
@@ -523,53 +569,149 @@ function extract(files) {
                 parseInterface(node);
             }
             else if (ts.isVariableDeclaration(node)) {
-                vars.push(addSource(node, {
-                    _: lineNumber,
-                    name: node.name.getText(),
-                    isReadonly: true,
-                    isStatic: false,
-                    isNullable: false,
-                    doc: parseDoc(node),
-                    type: parseType(node.type),
-                }));
+                const name = node.name.getText();
+                if (name == "Headers") {
+                    console.log("HeyCatch, ", name != lib.namespace &&
+                        !modules.find((v) => {
+                            return v.name == name;
+                        }) &&
+                        !vars.find((v) => v.name == name));
+                }
+                if (name != lib.namespace &&
+                    !modules.find((v) => {
+                        return v.name == name;
+                    }) &&
+                    !vars.find((v) => v.name == name)) {
+                    const parsedType = parseType(node.type);
+                    const type = node.type;
+                    if (name == "Headers") {
+                        console.log("HeyCatch2, ", ts.isTypeLiteralNode(type));
+                    }
+                    if (type && ts.isTypeLiteralNode(type)) {
+                        const prototype = type.members.find((m) => {
+                            var _a;
+                            return ((_a = m.name) === null || _a === void 0 ? void 0 : _a.getText()) == "prototype";
+                        });
+                        const cl = structs.find((struct) => struct.name == name);
+                        if (cl) {
+                            cl.declaredAsVar = !!(prototype &&
+                                ts.isPropertySignature(prototype) &&
+                                prototype.type);
+                            if (name == "Headers") {
+                                console.log("HeyCatch4, ", cl.declaredAsVar);
+                            }
+                        }
+                        if (name == "Headers" && !cl) {
+                            console.log("HeyCatch3, ", false);
+                        }
+                    }
+                    vars.push(addSource(node, {
+                        _: lineNumber,
+                        name,
+                        isReadonly: true,
+                        isStatic: false,
+                        isNullable: false,
+                        doc: parseDoc(node),
+                        type: parsedType,
+                    }));
+                }
             }
             else if (ts.isClassDeclaration(node)) {
                 if (node.name) {
                     const name = node.name.text;
-                    structs.push(Object.assign(Object.assign({}, parseStruct(node, name, node.members, node.typeParameters)), { isClass: true }));
+                    pushStruct(Object.assign(Object.assign({}, parseStruct(node, name, node.members, node.typeParameters)), { isClass: true }));
                 }
             }
+            else if (ts.isExportDeclaration(node) ||
+                ts.isExportAssignment(node) ||
+                ts.isImportEqualsDeclaration(node)) {
+            }
             else if (ts.isTypeAliasDeclaration(node)) {
-                typedefs.push(addSource(node, {
-                    _: lineNumber,
-                    name: node.name.text,
-                    doc: parseDoc(node),
-                    generics: parseTypeParameters(node.typeParameters),
-                    type: parseType(node.type),
-                }));
+                const name = node.name.text;
+                const typedef = { name };
+                withNamed(typedef, () => {
+                    typedef.generics = parseTypeParameters(node.typeParameters);
+                    const type = parseType(node.type);
+                    type.parent = name;
+                    typedef.type = type;
+                    typedef.doc = parseDoc(node);
+                    typedefs.push(addSource(node, typedef));
+                });
             }
             else if (ts.isModuleDeclaration(node)) {
-                if (node.body) {
+                if (node.body && node.name.text != "global") {
                     let module = modules.find((it) => it.namespace == node.name.text);
+                    if (!module && node.name.text == lib.namespace) {
+                        module = lib;
+                    }
                     if (!module) {
-                        console.log("Adding module", node.name.text);
+                        module = (_a = mainModules
+                            .find((it) => it.items.modules.some((it) => it.namespace == node.name.text))) === null || _a === void 0 ? void 0 : _a.items.modules.find((it) => it.namespace == node.name.text);
+                    }
+                    if (!module) {
                         module = {
                             _: lineNumber,
                             namespace: node.name.text,
-                            structs: [],
-                            typedefs: [],
-                            modules: [],
-                            funcs: [],
-                            vars: [],
+                            from: "submodule " + lib.namespace,
+                            items: {
+                                structs: [],
+                                typedefs: [],
+                                modules: [],
+                                funcs: [],
+                                vars: [],
+                                enums: [],
+                                imports: [],
+                                file: sourceFile.fileName,
+                            },
                         };
                         modules.push(module);
                     }
                     parseNodes(node.body, module);
                 }
             }
+            else if (ts.isEnumDeclaration(node)) {
+                const en = addSource(node, {
+                    name: node.name.text,
+                    doc: parseDoc(node),
+                });
+                const members = [];
+                for (const member of node.members) {
+                    const m = addSource(member, {
+                        name: member.name.getText(),
+                        doc: parseDoc(member),
+                        value: (_c = (_b = member.initializer) === null || _b === void 0 ? void 0 : _b.getText()) !== null && _c !== void 0 ? _c : "",
+                    });
+                    members.push(m);
+                }
+                en.members = members;
+                enums.push(en);
+            }
+            else if (ts.isImportDeclaration(node)) {
+                const from = node.moduleSpecifier.getText().replace(/["']/g, "");
+                let alias = "";
+                let types = [];
+                const bindings = (_d = node.importClause) === null || _d === void 0 ? void 0 : _d.namedBindings;
+                const local = isRelativeImport(from);
+                if (bindings) {
+                    if (ts.isNamespaceImport(bindings)) {
+                        alias = bindings.name.getText();
+                    }
+                    else if (ts.isNamedImports(bindings)) {
+                        types = bindings.elements.map((el) => el.name.getText());
+                    }
+                }
+                const imp = {
+                    alias,
+                    from,
+                    types,
+                    local,
+                };
+                pushImport(imp);
+                console.log("ImportDECLARE", from, imp, sourceFile.fileName);
+            }
             else {
-                if (node.kind != 1 && dev) {
-                    console.error("Unkown node type", node.getSourceFile().fileName, lineNumber, "kind:", node.kind);
+                if (node.kind != 1) {
+                    console.error("Unknown node type", node.getSourceFile().fileName, lineNumber, "kind:", node.kind);
                 }
             }
             return undefined;
@@ -579,7 +721,7 @@ function extract(files) {
         };
         ts.forEachChild(source, (node) => {
             if (ts.isNamespaceExportDeclaration(node)) {
-                namespace = node.name.text;
+                lib.namespace = node.name.text;
             }
         });
         var x = 0;
@@ -597,29 +739,41 @@ function extract(files) {
             }
             x++;
         });
-        return { structs, typedefs, funcs, vars, modules, namespace };
     };
     const toExport = [];
-    for (const file of files) {
+    const done = [];
+    for (var x = 0; x < files.length; x++) {
+        const file = files[x];
         if (!fs.existsSync(file)) {
-            throw 'File doesnt exist: ' + file;
+            throw "File doesnt exist: " + file;
         }
+        if (done.includes(file)) {
+            console.log("Skipping already done file " + file);
+            continue;
+        }
+        done.push(file);
+        currentFile = file;
         if (debug) {
-            console.log("Parsing", file);
+            //console.log("Parsing", file);
         }
-        const sourceFile = program.getSourceFile(file);
+        sourceFile = program.getSourceFile(file);
         const module = {
             _: -1,
             namespace: "",
-            structs: [],
-            typedefs: [],
-            modules: [],
-            funcs: [],
-            vars: [],
+            from: "mainLoop " + file,
+            items: {
+                structs: [],
+                typedefs: [],
+                modules: [],
+                funcs: [],
+                vars: [],
+                enums: [],
+                imports: [],
+            },
+            file,
         };
         mainModules.push(module);
         parseNodes(sourceFile, module);
-        const namespace = module.namespace;
         if (dev) {
             //const jsonFile = file.replace(".d.ts", ".d.json");
             //fs.writeFileSync(jsonFile, JSON.stringify(mainModule, null, 2));
@@ -627,15 +781,16 @@ function extract(files) {
         else {
             const path = file.split("/");
             const name = path[path.length - 1];
-            toExport.push({ items: module, namespace, name });
+            toExport.push(Object.assign(Object.assign({}, module), { name }));
         }
     }
     if (!dev) {
         //console.log(JSON.stringify(toExport, null, 2));
-        fs.writeFileSync("./toExport.json", JSON.stringify({ files: toExport }, null, 2));
-        console.log('Written toExport.json!');
+        console.log("FFUSES", uses);
+        fs.writeFileSync("./toExport.json", JSON.stringify({ files: toExport, uses }, null, 2));
+        //console.log("Written toExport.json!");
     }
-    console.log('Done extracting\n');
+    //console.log("Done extracting\n");
 }
 // Run the extract function with the script's arguments
 //extract(["d/go.d.ts"]); //, "d/t2.d.ts", "d/t3.d.ts"]);
@@ -643,7 +798,21 @@ function extract(files) {
 //   "d/lib.dom.d.ts",
 //   "d/lib.es5.d.ts",
 //   "d/lib.webworker.importscripts.d.ts",
-//   "d/lib.scripthost.d.ts",
-// ]);
+//   "d/lib.scripthostimport { namespace } from '../../ts2dart/work/deno/download/0lib.deno.ns.d';
+// ]);import { proto } from '../../typings/work/gojs/out/package/projects/pdf/pdfkit';
 //console.log(process.argv.splice(2));
-extract(process.argv.splice(2));
+const type = process.argv[2];
+if (type) {
+    if (type == "-f") {
+        extract([...process.argv.splice(3)]);
+    }
+    else if (type == "-t") {
+        const project = new ts_morph_1.Project();
+        project.addSourceFilesAtPaths(process.argv[3]);
+        project.resolveSourceFileDependencies();
+        const files = project.getSourceFiles().map((s) => s.getFilePath());
+        console.log("CrawledFiles:");
+        console.log(files.join("\n"));
+        extract(files);
+    }
+}

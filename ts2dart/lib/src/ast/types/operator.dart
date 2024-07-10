@@ -9,9 +9,9 @@ import 'local.dart';
 import 'type.dart';
 
 enum InteropOperatorType {
-  keyOf(141),
-  unique(156),
-  readonly(146);
+  keyOf(143),
+  readonly(148),
+  unique(158);
 
   const InteropOperatorType(this.kind);
 

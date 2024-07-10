@@ -719,8 +719,7 @@ function extract(files: string[]): void {
           if (name == "Headers") {
             console.log("HeyCatch2, ", ts.isTypeLiteralNode(type));
           }
-
-          if (ts.isTypeLiteralNode(type)) {
+          if (type && ts.isTypeLiteralNode(type)) {
             const prototype = type.members.find((m) => {
               return m.name?.getText() == "prototype";
             });
