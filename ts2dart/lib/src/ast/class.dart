@@ -657,7 +657,6 @@ class InteropClass extends InteropNamedDeclaration
         if (type is InteropClass) {
           return ret as InteropRef<InteropClass>;
         } else {
-<<<<<<< HEAD
           assert((type is InteropInterface) || (type is InteropTypedef), 'Not interface/typedef: ${type}');
           if (type is InteropTypedef) {
             while (ret.typeArgs.isNotEmpty) {
@@ -666,11 +665,6 @@ class InteropClass extends InteropNamedDeclaration
             }
           }
           return ret.copyWith((type as InteropInterface).parse().type as InteropClass);
-=======
-          assert(ret.type is InteropInterface, 'Not interface: ${ret.type}');
-          return ret.copyWith(
-              (ret.type as InteropInterface).parse().type as InteropClass);
->>>>>>> e646b65c348f9039d82830b55499a1a15aa584da
         }
       }));
 
